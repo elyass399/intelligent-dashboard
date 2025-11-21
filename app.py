@@ -22,38 +22,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- CSS PERSONALIZZATO PER MIGLIORARE LA LEGGIBILITÀ ---
+# --- CSS PERSONALIZZATO ---
 st.markdown("""
 <style>
-    .big-font {
-        font-size:24px !important;
-        font-weight: bold;
-    }
-    .verdict-box {
-        padding: 20px;
-        border-radius: 10px;
-        margin-top: 20px;
-        text-align: center;
-    }
+    .big-font { font-size:24px !important; font-weight: bold; }
+    .verdict-box { padding: 20px; border-radius: 10px; margin-top: 20px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNZIONE PER CARICARE I DATI CON CACHING ---
+# --- FUNZIONE PER CARICARE I DATI ---
 @st.cache_data
 def load_data(uploaded_file):
     df = pd.read_csv(uploaded_file)
-    if 'ID' in df.columns:
-        df = df.set_index('ID')
+    # Cerca di identificare colonne ID comuni e metterle come indice per non usarle nel modello
+    possible_ids = ['ID', 'id', 'Id', 'CLIENT_ID', 'Client_ID', 'Customer_ID']
+    for col in possible_ids:
+        if col in df.columns:
+            df = df.set_index(col)
+            break
     return df
 
 # --- LOGICA PRINCIPALE ---
 st.title("🤖 Dashboard Predittiva Intelligente")
 st.markdown("""
 Carica i tuoi dati storici, addestra l'intelligenza artificiale e ottieni **risposte chiare** 
-su nuovi clienti (es. "Pagherà o no?").
+su nuovi dati (es. "Pagherà o no?", "Rinnoverà?", "È frode?").
 """)
 
-# --- INIZIALIZZAZIONE SESSION STATE ---
+# --- STATE MANAGEMENT ---
 if 'model_trained' not in st.session_state: st.session_state.model_trained = False
 
 # --- SIDEBAR ---
@@ -61,172 +57,160 @@ with st.sidebar:
     st.header("1. Carica i Tuoi Dati")
     uploaded_file = st.file_uploader("Scegli un file CSV", type="csv")
     
-    # SEZIONE DI PERSONALIZZAZIONE LABELS (appare solo dopo training)
+    # SEZIONE PERSONALIZZAZIONE (Appare dopo il training)
     if st.session_state.model_trained:
         st.divider()
         st.header("🛠️ Personalizza Risposte")
-        st.info("Assegna un nome comprensibile alle classi per il verdetto finale.")
+        st.info("Definisci i nomi delle classi per il risultato finale.")
         
-        # Creiamo un dizionario per mappare le classi tecniche in nomi umani
         label_mapping = {}
         for cls in st.session_state.classes:
-            # Valore di default
-            default_text = "Paga Regolarmente" if str(cls) in ['0', 'No', 'Paid'] else "Non Paga / Default"
-            user_label = st.text_input(f"Cosa significa la classe '{cls}'?", value=f"Classe {cls}")
+            # Default intelligente
+            default_text = "Positivo / Paga" if str(cls) in ['0', 'No', 'Paid', 'OK'] else "Negativo / Default"
+            user_label = st.text_input(f"Significato classe '{cls}':", value=f"Classe {cls}")
             label_mapping[cls] = user_label
         
         st.session_state.label_mapping = label_mapping
 
-# Esecuzione solo se un file è caricato
 if uploaded_file is not None:
     df_to_use = load_data(uploaded_file)
 
-    # --- SEZIONE 2: ANALISI ESPLORATIVA (EDA) ---
-    with st.expander("📊 Clicca per vedere l'Analisi dei Dati (EDA)", expanded=False):
-        col_eda_1, col_eda_2 = st.columns(2)
-        with col_eda_1:
-            st.subheader("Anteprima Dati")
+    # --- 2. ANALISI DATI (EDA) ---
+    with st.expander("📊 Clicca per vedere i Dati e le Statistiche", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Anteprima")
             st.dataframe(df_to_use.head())
-        with col_eda_2:
+        with col2:
             st.subheader("Statistiche")
             st.dataframe(df_to_use.describe())
-        
-        # Correlazione
-        numeric_df = df_to_use.select_dtypes(include=np.number)
-        if not numeric_df.empty:
-            st.subheader("Mappa delle Correlazioni")
-            fig_corr = px.imshow(numeric_df.corr(), text_auto=True, color_continuous_scale='RdBu_r')
-            st.plotly_chart(fig_corr, use_container_width=True)
 
-    # --- SEZIONE 4: MODELING PREDITTIVO ---
+    # --- 4. ADDESTRAMENTO ---
     st.header("🧠 Addestramento Modello")
+    col_tr1, col_tr2 = st.columns([1, 3])
     
-    col_train_1, col_train_2 = st.columns([1, 3])
-    
-    with col_train_1:
-        target_variable = st.selectbox("Qual è la colonna da prevedere?", options=df_to_use.columns)
-        train_btn = st.button("🚀 Avvia Addestramento", use_container_width=True)
+    with col_tr1:
+        target_variable = st.selectbox("Cosa vuoi prevedere?", options=df_to_use.columns)
+        train_btn = st.button("🚀 Avvia Addestramento", type="primary")
 
     if train_btn and target_variable:
-        with st.spinner('L\'IA sta imparando dai tuoi dati...'):
-            # Preparazione X e y
+        with st.spinner('Analisi dei pattern in corso...'):
             X = df_to_use.drop(columns=[target_variable])
             y = df_to_use[target_variable]
             
-            # Pipeline di Preprocessing e Modello
+            # Identifica tipi di colonne
             numeric_features = X.select_dtypes(include=np.number).columns.tolist()
             categorical_features = X.select_dtypes(exclude=np.number).columns.tolist()
             
-            numeric_transformer = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())])
-            categorical_transformer = Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))])
+            # Pipeline
+            num_trans = Pipeline(steps=[('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())])
+            cat_trans = Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))])
             
             preprocessor = ColumnTransformer(transformers=[
-                ('num', numeric_transformer, numeric_features), 
-                ('cat', categorical_transformer, categorical_features)
+                ('num', num_trans, numeric_features), 
+                ('cat', cat_trans, categorical_features)
             ])
             
-            model_pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', RandomForestClassifier(random_state=42))])
+            model = Pipeline(steps=[('preprocessor', preprocessor), ('clf', RandomForestClassifier(random_state=42))])
             
-            # Split e Fit
+            # Train
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-            model_pipeline.fit(X_train, y_train)
-            y_pred = model_pipeline.predict(X_test)
+            model.fit(X_train, y_train)
             
-            # Salvataggio stato
-            st.session_state.model = model_pipeline
+            # Save Session
+            st.session_state.model = model
             st.session_state.X_train_columns = X_train.columns
+            st.session_state.feature_types = X_train.dtypes # Salviamo i tipi per formattare l'input dopo
             st.session_state.y_test = y_test
-            st.session_state.y_pred = y_pred
-            st.session_state.classes = model_pipeline.classes_
+            st.session_state.y_pred = model.predict(X_test)
+            st.session_state.classes = model.classes_
             st.session_state.model_trained = True
             
-            # Inizializza mapping di default se non esiste
+            # Init mapping
             if 'label_mapping' not in st.session_state:
-                st.session_state.label_mapping = {c: str(c) for c in model_pipeline.classes_}
+                st.session_state.label_mapping = {c: str(c) for c in model.classes_}
             
-            st.success("✅ Addestramento completato!")
+            st.success("✅ Modello pronto!")
             st.rerun()
 
-    # --- SEZIONE RISULTATI TECNICI ---
-    if st.session_state.model_trained:
-        with st.expander("📈 Vedi Performance Tecniche (Accuratezza, Matrice Confusione)"):
-            acc = accuracy_score(st.session_state.y_test, st.session_state.y_pred)
-            st.metric("Accuratezza del Modello", f"{acc:.1%}")
-            
-            cm = confusion_matrix(st.session_state.y_test, st.session_state.y_pred, labels=st.session_state.classes)
-            fig_cm = px.imshow(cm, text_auto=True, title="Matrice di Confusione", labels=dict(x="Predetto", y="Reale"))
-            st.plotly_chart(fig_cm, use_container_width=True)
-
-    # --- SEZIONE 5: PREVISIONE PER NUOVO CLIENTE (SIMULATORE) ---
+    # --- 5. SIMULATORE (INPUT CORRETTO) ---
     st.divider()
-    st.header("🔮 Simulatore: Il cliente pagherà?")
+    st.header("🔮 Simulatore Nuovi Dati")
     
     if st.session_state.model_trained:
-        st.write("Inserisci i dati del nuovo cliente qui sotto:")
+        st.write("Inserisci i parametri. **Nota:** I campi interi (es. ID, Età) non hanno decimali.")
         
         input_data = {}
         with st.form("prediction_form"):
             cols = st.columns(3)
-            for i, column in enumerate(st.session_state.X_train_columns):
+            for i, col_name in enumerate(st.session_state.X_train_columns):
                 with cols[i % 3]:
-                    if pd.api.types.is_numeric_dtype(df_to_use[column]):
-                        val = float(df_to_use[column].median()) if not pd.isna(df_to_use[column].median()) else 0.0
-                        input_data[column] = st.number_input(column, value=val)
+                    col_type = st.session_state.feature_types[col_name]
+                    
+                    # LOGICA MIGLIORATA PER NUMERI
+                    if pd.api.types.is_numeric_dtype(col_type):
+                        # Se è un INTERO (int64) o sembra un ID/Età
+                        if pd.api.types.is_integer_dtype(col_type) or (df_to_use[col_name].fillna(0) % 1 == 0).all():
+                            # Usa median come default, ma converti a INT
+                            default_val = int(df_to_use[col_name].median()) if not pd.isna(df_to_use[col_name].median()) else 0
+                            # step=1 e format="%d" forzano l'assenza di decimali
+                            input_data[col_name] = st.number_input(col_name, value=default_val, step=1, format="%d")
+                        else:
+                            # Se è un FLOAT (soldi, percentuali)
+                            default_val = float(df_to_use[col_name].median())
+                            input_data[col_name] = st.number_input(col_name, value=default_val, format="%.2f")
                     else:
-                        opts = df_to_use[column].dropna().unique().tolist()
-                        input_data[column] = st.selectbox(column, options=opts)
+                        # Se è Categorico (Testo)
+                        opts = df_to_use[col_name].dropna().unique().tolist()
+                        input_data[col_name] = st.selectbox(col_name, options=opts)
             
-            predict_btn = st.form_submit_button("🔍 Analizza Cliente", type="primary", use_container_width=True)
+            predict_btn = st.form_submit_button("🔍 Analizza Caso", type="primary", use_container_width=True)
 
         if predict_btn:
-            # Elaborazione Previsione
-            new_df = pd.DataFrame([input_data])[st.session_state.X_train_columns]
-            prediction_raw = st.session_state.model.predict(new_df)[0]
-            probs = st.session_state.model.predict_proba(new_df)[0]
+            # Calcolo
+            df_new = pd.DataFrame([input_data])[st.session_state.X_train_columns]
+            pred_raw = st.session_state.model.predict(df_new)[0]
+            probs = st.session_state.model.predict_proba(df_new)[0]
             
-            # Recupero indice e probabilità massima
-            class_idx = list(st.session_state.classes).index(prediction_raw)
+            class_idx = list(st.session_state.classes).index(pred_raw)
             confidence = probs[class_idx]
+            human_label = st.session_state.label_mapping.get(pred_raw, str(pred_raw))
             
-            # Recupero etichetta comprensibile (dal mapping)
-            human_label = st.session_state.label_mapping.get(prediction_raw, str(prediction_raw))
-            
-            # --- CONCLUSIONE PER NON TECNICI ---
+            # --- CONCLUSIONE BUSINESS ---
             st.markdown("---")
             st.subheader("📢 Verdetto Finale")
             
-            # Logica colori
-            bg_color = "#d4edda" if class_idx == 0 else "#f8d7da" # Verde se classe 0, Rosso se classe 1 (supposizione base)
-            # Se l'utente ha rinominato le label, usiamo un colore neutro o basato sulla probabilità
-            if confidence > 0.8:
-                emoji_conf = "molto alta 🟢"
-            elif confidence > 0.6:
-                emoji_conf = "moderata 🟡"
-            else:
-                emoji_conf = "bassa (incerto) 🔴"
+            # Colore dinamico in base alla confidenza
+            color_border = "#4CAF50" if confidence > 0.7 else "#FFC107"
+            if confidence < 0.55: color_border = "#F44336"
 
-            # Box del risultato
             st.markdown(f"""
-            <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 10px solid #4CAF50; box-shadow: 2px 2px 10px rgba(0,0,0,0.1);">
-                <h3 style="margin-top:0; color: #333;">Risultato dell'Analisi:</h3>
-                <p style="font-size: 28px; font-weight: bold; color: #000; margin: 10px 0;">
+            <div style="
+                background-color: #ffffff; 
+                padding: 25px; 
+                border-radius: 15px; 
+                border-left: 10px solid {color_border}; 
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                margin-bottom: 20px;
+            ">
+                <h4 style="margin:0; color: #666;">Previsione IA:</h4>
+                <p style="font-size: 32px; font-weight: bold; color: #2c3e50; margin: 10px 0;">
                     👉 {human_label}
                 </p>
-                <p style="font-size: 16px; color: #555;">
-                    L'intelligenza artificiale è sicura al <strong>{confidence:.1%}</strong> ({emoji_conf}) di questa previsione.
+                <hr style="border: 0; border-top: 1px solid #eee;">
+                <p style="margin-bottom:0; font-size: 16px;">
+                    Affidabilità della previsione: <strong>{confidence:.1%}</strong>
                 </p>
             </div>
             """, unsafe_allow_html=True)
-            
-            # Spiegazione Testuale Semplice
-            st.write("")
-            st.markdown("### 📝 Cosa significa?")
-            st.write(f"In base ai dati inseriti, il modello statistico ritiene che il comportamento più probabile di questo cliente corrisponda alla categoria **'{human_label}'**.")
-            
-            if confidence < 0.60:
-                st.warning("⚠️ **Attenzione:** La confidenza del modello è bassa (< 60%). Si consiglia una verifica umana manuale prima di prendere decisioni critiche.")
+
+            # Spiegazione per NON tecnici
+            if confidence > 0.75:
+                st.success(f"✅ **Alta Sicurezza:** L'IA è molto sicura che il risultato sia '{human_label}'. Puoi procedere con fiducia.")
+            elif confidence > 0.55:
+                st.warning(f"⚖️ **Sicurezza Moderata:** L'IA propende per '{human_label}', ma la situazione non è netta. Controlla altri fattori.")
             else:
-                st.success("✅ **Nota:** Il modello mostra una confidenza solida. Puoi procedere secondo le procedure standard per questa categoria.")
+                st.error(f"⚠️ **Incertezza:** L'IA non è sicura (circa 50/50). Si consiglia vivamente una revisione umana manuale.")
 
     else:
-        st.warning("⚠️ Carica un file CSV e clicca su 'Avvia Addestramento' per sbloccare il simulatore.")
+        st.info("☝️ Inizia caricando un file CSV dalla barra laterale.")
